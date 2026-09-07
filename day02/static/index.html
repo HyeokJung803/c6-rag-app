@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI 모의 면접 코치</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+    #log { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; min-height: 240px; white-space: pre-wrap; }
+    .me { color: #2563eb; font-weight: 600; }
+    .bot { color: #111; }
+    .sources { color: #666; font-size: 0.85em; border-left: 3px solid #ddd; padding-left: 8px; margin: 4px 0; }
+    .err { color: #c00; }
+    form { display: flex; gap: 8px; margin-top: 12px; }
+    input { flex: 1; padding: 8px; }
+    button { padding: 8px 16px; }
+  </style>
+</head>
+<body>
+  <h2>AI 모의 면접 코치</h2>
+  <div id="log"></div>
+  <form id="f">
+    <input id="msg" placeholder="면접관에게 답하거나 직무를 물어보세요" autocomplete="off" />
+    <button id="send">보내기</button>
+  </form>
+
+  <script>
+    // 이 화면이 백엔드를 어디서 부를지. 같은 서버가 이 파일을 주면 ''(같은 출처)면 되고,
+    // file:// 로 열어 시험할 때는 http://127.0.0.1:8000 을 직접 가리킨다(그때 CORS를 만난다).
+    const API = location.protocol === "file:" ? "http://127.0.0.1:8000" : "";
+    const SESSION = "web-" + Math.random().toString(36).slice(2, 8);  // 이 탭의 세션 열쇠
+
+    const log = document.getElementById("log");
+    const form = document.getElementById("f");
+    const input = document.getElementById("msg");
+
+    function line(cls, text) {
+      const div = document.createElement("div");
+      div.className = cls;
+      div.textContent = text;
+      log.appendChild(div);
+      return div;
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const message = input.value.trim();
+      if (!message) return;
+      input.value = "";
+      line("me", "지원자: " + message);
+      const botLine = line("bot", "");          // 여기에 조각을 이어 붙인다(스트리밍)
+
+      try {
+        const resp = await fetch(API + "/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: SESSION, message }),
+        });
+        // 스트림을 열어 도착하는 조각을 읽는다. 브라우저 fetch가 곧 SSE 리더가 된다.
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "", event = null;
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const frames = buffer.split("\n");
+          buffer = frames.pop();                 // 마지막 조각은 아직 안 끝났을 수 있다
+          for (const raw of frames) {
+            if (raw.startsWith("event:")) event = raw.slice(6).trim();
+            else if (raw.startsWith("data:")) {
+              const data = JSON.parse(raw.slice(5).trim());   // 한국어 \uXXXX 는 JSON.parse가 되돌린다
+              if (event === "delta") botLine.textContent += data.delta;
+              else if (event === "sources" && data.sources?.length)
+                line("sources", "근거: " + data.sources.join(" / "));
+            }
+          }
+        }
+      } catch (err) {
+        line("err", "오류: " + err.message + " (콘솔의 CORS 차단을 확인하세요)");
+      }
+    });
+  </script>
+</body>
+</html>
